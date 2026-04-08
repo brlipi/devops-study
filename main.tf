@@ -2,28 +2,6 @@ provider "aws" {
   region = "us-east-1"
 }
 
-#data "aws_ami" "ubuntu" {
-#  most_recent = true
-#
-#  filter {
-#    name   = "name"
-#    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"]
-#  }
-#
-#  owners = ["099720109477"] # Canonical
-#}
-#
-#resource "aws_instance" "app_server" {
-#  count         = var.instance_count
-#  ami           = data.aws_ami.ubuntu.id
-#  instance_type = var.instance_type
-#
-#  vpc_security_group_ids = [module.vpc.default_security_group_id]
-#  subnet_id = module.vpc.private_subnets[0]
-#  tags = {
-#    Name = "${var.instance_name}-${count.index + 1}"
-#  }
-#}
 
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
@@ -166,4 +144,67 @@ module "k8s_outbound_ssh" {
       cidr_blocks = "10.0.1.0/24"
     }
   ]
+}
+
+module "public_access_outbound_https" {
+  source  = "terraform-aws-modules/security-group/aws"
+  version = "~> 5.0"
+
+  name        = "public-access-outbound-https"
+  description = "Security Group to allow SSM connection to instance"
+  vpc_id      = module.vpc.vpc_id
+
+  egress_with_cidr_blocks = [
+    {
+      from_port   = 443
+      to_port     = 443
+      protocol    = "tcp"
+      description = "Allow HTTPS to anywhere for SSM"
+      cidr_blocks = "0.0.0.0/0"
+    }
+  ]
+}
+
+resource "aws_instance" "public_access" {
+  ami           = var.ami_id
+  instance_type = var.instance_type
+
+  vpc_security_group_ids = [
+    module.k8s_outbound_ssh.security_group_id,
+    module.public_access_outbound_https.security_group_id
+  ]
+  subnet_id = module.vpc.public_subnets[0]
+  associate_public_ip_address = true
+  tags = {
+    Name = "public_access"
+  }
+}
+
+resource "aws_instance" "control_plane" {
+  ami           = var.ami_id
+  instance_type = var.instance_type
+
+  vpc_security_group_ids = [
+    module.k8s_control_plane_sg.security_group_id,
+    module.k8s_inbound_ssh.security_group_id
+  ]
+  subnet_id = module.vpc.private_subnets[0]
+  tags = {
+    Name = "master-node"
+  }
+}
+
+resource "aws_instance" "data_plane" {
+  count         = var.instance_count
+  ami           = var.ami_id
+  instance_type = var.instance_type
+
+  vpc_security_group_ids = [
+    module.k8s_data_plane_sg.security_group_id,
+    module.k8s_inbound_ssh.security_group_id
+  ]
+  subnet_id = module.vpc.private_subnets[0]
+  tags = {
+    Name = "${var.instance_name}-${count.index + 1}"
+  }
 }
